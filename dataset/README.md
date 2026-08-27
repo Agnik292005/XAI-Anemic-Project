@@ -17,7 +17,7 @@ Guide: Prof. Prabin SM
 ## Google Drive Link
 
 The full image dataset (folders and CSV) is available here:
-https://drive.google.com/drive/folders/1XBTL86t9YB3qb5gVKlOrCmIuEHYQHUl5?usp=sharing
+https://drive.google.com/drive/folders/1-GOl843SP27TNVlUNL4DRmHVmqG9aaT-?usp=sharing
 
 ## What This Dataset Is
 
