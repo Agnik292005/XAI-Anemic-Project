@@ -1,0 +1,63 @@
+{
+  "best_phase1_smoothed_val_acc": 0.8072916666666666,
+  "best_phase2_val_loss": 1.3719874918460846,
+  "total_params": 2578850,
+  "naive_baseline_acc": 0.515625,
+  "model_test_acc": 0.859375,
+  "test_classification_report": {
+    "Non-Anemic": {
+      "precision": 0.8703703703703703,
+      "recall": 0.8545454545454545,
+      "f1-score": 0.8623853211009175,
+      "support": 55.0
+    },
+    "Mild-Moderate": {
+      "precision": 0.8450704225352113,
+      "recall": 0.9090909090909091,
+      "f1-score": 0.8759124087591241,
+      "support": 66.0
+    },
+    "Severe": {
+      "precision": 1.0,
+      "recall": 0.42857142857142855,
+      "f1-score": 0.6,
+      "support": 7.0
+    },
+    "accuracy": 0.859375,
+    "macro avg": {
+      "precision": 0.9051469309685273,
+      "recall": 0.7307359307359307,
+      "f1-score": 0.7794325766200139,
+      "support": 128.0
+    },
+    "weighted avg": {
+      "precision": 0.8644142051382369,
+      "recall": 0.859375,
+      "f1-score": 0.8550110284269739,
+      "support": 128.0
+    }
+  },
+  "hb_mae": 1.569046974182129,
+  "ece": 0.34156548930332065,
+  "stageA_binary_accuracy": 0.8828125,
+  "stageB_accuracy_among_correctly_passed": 0.927536231884058,
+  "truly_anemic_lost_at_stageA": 4,
+  "anemic_decision_threshold": 0.35,
+  "merged_mild_moderate": true,
+  "phase1_hyperparameters_used": {
+    "LR": 0.0001,
+    "BATCH_SIZE": 16,
+    "WEIGHT_DECAY": 0.0001,
+    "NUM_EPOCHS_PHASE1": 80,
+    "PATIENCE_PHASE1": 10,
+    "VAL_ACC_SMOOTHING_WINDOW": 3,
+    "ANEMIC_DECISION_THRESHOLD": 0.35
+  },
+  "training_design": {
+    "phase1_epochs_planned": 80,
+    "phase1_patience": 10,
+    "phase2_epochs_planned": 30,
+    "phase2_patience": 10,
+    "phase2_backbone_lr": 2.9999999999999997e-06
+  }
+}

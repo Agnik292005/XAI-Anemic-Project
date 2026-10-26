@@ -1,0 +1,8 @@
+torch
+torchvision
+opencv-python-headless
+numpy
+pandas
+matplotlib
+pillow
+gradio>=5
