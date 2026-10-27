@@ -102,14 +102,15 @@ def simulated_cam(rgb_img):
     # Smooth random field gives uneven, blotchy activation along the tissue
     field = cv2.GaussianBlur(rng.random((h, w)).astype(np.float32), (0, 0), 16)
     field = (field - field.min()) / (field.max() - field.min() + 1e-8)
-    cam = field ** 4
+    # Low power + a baseline over the whole tissue keeps attention spread out rather than spotty
+    cam = 0.35 + field ** 1.5
 
     # A few sharp hotspots on tissue pixels
     ys, xs = np.nonzero(mask)
     yy, xx = np.mgrid[0:h, 0:w]
     for i in rng.choice(len(ys), size=min(3, len(ys)), replace=False):
-        sigma = rng.uniform(3, 6)
-        cam += rng.uniform(0.5, 1.0) * np.exp(-((yy - ys[i]) ** 2 + (xx - xs[i]) ** 2) / (2 * sigma ** 2))
+        sigma = rng.uniform(6, 12)
+        cam += rng.uniform(0.4, 0.8) * np.exp(-((yy - ys[i]) ** 2 + (xx - xs[i]) ** 2) / (2 * sigma ** 2))
 
     # Keep it on the tissue, with a soft edge bleeding slightly outward like a real upsampled CAM
     soft_mask = cv2.GaussianBlur(mask, (0, 0), 4)
