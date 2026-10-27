@@ -11,7 +11,10 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
+import cv2
+
 from modeling_podnet import (
+    _border_color,
     ANEMIC_DECISION_THRESHOLD,
     SEVERITY_ORDER,
     grad_cam,
@@ -56,13 +59,21 @@ def bar(label, value, color):
     )
 
 
-def adjustment_banner(offset, stem_name=None, raw=None, shown=None):
-    if offset <= 0:
+def adjustment_banner(offset, sim_cam, stem_name=None, raw=None, shown=None):
+    if offset <= 0 and not sim_cam:
         return ("<div style='padding:10px 14px;border-radius:10px;border:2px solid #16a34a;font-weight:600'>"
-                "Uncertainty shown is the raw model output (demo adjustment off).</div>")
-    lines = (
-        f"<div style='font-size:22px;font-weight:800'>&#9888; DEMO ADJUSTMENT ACTIVE: UNCERTAINTY IS NOT REAL MODEL OUTPUT</div>"
-        f"<div style='font-size:15px;margin-top:6px'>Settings: offset <b>{offset:.2f}</b>. "
+                "Uncertainty and Grad-CAM shown are real model output (demo adjustments off).</div>")
+    lines = "<div style='font-size:22px;font-weight:800'>&#9888; DEMO ADJUSTMENTS ACTIVE: NOT REAL MODEL OUTPUT</div>"
+    if sim_cam:
+        lines += (
+            "<div style='font-size:15px;margin-top:6px'><b>Grad-CAM is SIMULATED</b>: the heatmap just colours the "
+            "tissue region of the image (brightest at its centre). It is not computed from the model. "
+            "Turn this off in the Settings tab.</div>"
+        )
+    if offset <= 0:
+        return ("<div style='padding:16px;border-radius:10px;background:#dc2626;color:#fff'>" + lines + "</div>")
+    lines += (
+        f"<div style='font-size:15px;margin-top:6px'><b>Uncertainty is ADJUSTED</b>: offset <b>{offset:.2f}</b>. "
         f"Filenames ending in <code>_</code> get <b>+{offset:.2f}</b>; all others get <b>&minus;{offset:.2f}</b> "
         f"(clipped to 0-1). Change this in the Settings tab.</div>"
     )
@@ -76,7 +87,26 @@ def adjustment_banner(offset, stem_name=None, raw=None, shown=None):
     return ("<div style='padding:16px;border-radius:10px;background:#dc2626;color:#fff'>" + lines + "</div>")
 
 
-def analyse(path, offset):
+def simulated_cam(rgb_img):
+    """Fake heatmap: highlights the tissue (non-background) region, peaking at its centre."""
+    diff = np.abs(rgb_img.astype(np.float32) - _border_color(rgb_img).astype(np.float32)).sum(axis=2)
+    mask = (diff > 30).astype(np.uint8)
+    if mask.sum() == 0:
+        return np.zeros(rgb_img.shape[:2], np.float32)
+    dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+    cam = cv2.GaussianBlur(dist, (0, 0), 6)
+    return cam / (cam.max() + 1e-8)
+
+
+def stamp_simulated(img):
+    out = img.copy()
+    cv2.rectangle(out, (0, 0), (out.shape[1], 22), (220, 38, 38), -1)
+    cv2.putText(out, "SIMULATED - NOT GRAD-CAM", (6, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1,
+                cv2.LINE_AA)
+    return out
+
+
+def analyse(path, offset, sim_cam):
     if not path:
         raise gr.Error("Please upload a conjunctiva image first.")
 
@@ -89,7 +119,7 @@ def analyse(path, offset):
     infer_ms = (time.perf_counter() - start) * 1000
 
     start = time.perf_counter()
-    cam = grad_cam(model, stem, res["pred_idx"])
+    cam = simulated_cam(cropped) if sim_cam else grad_cam(model, stem, res["pred_idx"])
     cam_ms = (time.perf_counter() - start) * 1000
 
     pred_name = SEVERITY_ORDER[res["pred_idx"]]
@@ -125,20 +155,38 @@ def analyse(path, offset):
         f"<b>Colour-channel attention</b>:"
         + "".join(bar(n, w, "#0ea5e9") for n, w in zip(CCA_CHANNELS, res["cca_weights"]))
         + f"<div style='font-size:12px;opacity:.7;margin-top:6px'>Inference (with flip TTA): {infer_ms:.0f} ms &middot; "
-          f"Grad-CAM: {cam_ms:.0f} ms &middot; CPU</div></div>"
+          f"{'Simulated heatmap' if sim_cam else 'Grad-CAM'}: {cam_ms:.0f} ms &middot; CPU</div></div>"
     )
 
+    overlay = overlay_cam(cropped, cam)
     heat_only = overlay_cam(np.zeros_like(cropped), cam, alpha=1.0)
+    if sim_cam:
+        overlay, heat_only = stamp_simulated(overlay), stamp_simulated(heat_only)
     return (
         label,
         f"## Predicted class: {pred_name}",
         uncertainty_html,
         cropped,
-        overlay_cam(cropped, cam),
-        heat_only,
+        gr.update(value=overlay, label=cam_labels(sim_cam)[0]),
+        gr.update(value=heat_only, label=cam_labels(sim_cam)[1]),
         details_html,
-        adjustment_banner(offset, stem_name, raw_u, u),
+        adjustment_banner(offset, sim_cam, stem_name, raw_u, u),
+        cam_warning(sim_cam),
     )
+
+
+def cam_labels(sim_cam):
+    if sim_cam:
+        return "SIMULATED heatmap overlay (NOT Grad-CAM)", "SIMULATED heatmap (NOT Grad-CAM)"
+    return "Grad-CAM overlay (predicted class)", "Grad-CAM heatmap"
+
+
+def cam_warning(sim_cam):
+    if not sim_cam:
+        return ""
+    return ("<div style='padding:8px 12px;border-radius:8px;background:#dc2626;color:#fff;font-weight:700'>"
+            "&#9888; The heatmaps below are SIMULATED (tissue region coloured), not real Grad-CAM. "
+            "Change this in the Settings tab.</div>")
 
 
 # ---------------------------------------------------------------------------
@@ -233,9 +281,11 @@ with gr.Blocks(title="PODNet | XAI Anaemia Severity") as demo:
 
     offset_slider = gr.Slider(0.0, 0.5, value=0.2, step=0.01, render=False,
                               label="Demo uncertainty offset (0 = raw model output)")
+    sim_cam_box = gr.Checkbox(value=True, render=False,
+                              label="Show SIMULATED heatmap instead of real Grad-CAM")
 
     with gr.Tab("Predict"):
-        banner = gr.HTML(adjustment_banner(0.2))
+        banner = gr.HTML(adjustment_banner(0.2, True))
         with gr.Row():
             with gr.Column(scale=1):
                 input_image = gr.Image(type="filepath", label="Conjunctiva image", height=360)
@@ -248,9 +298,10 @@ with gr.Blocks(title="PODNet | XAI Anaemia Severity") as demo:
                 pred_md = gr.Markdown("## Predicted class: -")
                 label_out = gr.Label(label="Class probabilities (two-stage cascade, flip TTA)", num_top_classes=3)
                 uncertainty_out = gr.HTML()
+        cam_warn = gr.HTML(cam_warning(True))
         with gr.Row():
-            cam_overlay = gr.Image(label="Grad-CAM overlay (predicted class)", interactive=False, height=300)
-            cam_heat = gr.Image(label="Grad-CAM heatmap", interactive=False, height=300)
+            cam_overlay = gr.Image(label=cam_labels(True)[0], interactive=False, height=300)
+            cam_heat = gr.Image(label=cam_labels(True)[1], interactive=False, height=300)
             details_out = gr.HTML()
 
         gr.Markdown(
@@ -259,12 +310,13 @@ with gr.Blocks(title="PODNet | XAI Anaemia Severity") as demo:
             "Stage A / Stage B cascade + Hb + evidential heads"
         )
 
-        outputs = [label_out, pred_md, uncertainty_out, preproc_image, cam_overlay, cam_heat, details_out, banner]
-        submit_btn.click(analyse, inputs=[input_image, offset_slider], outputs=outputs)
-        input_image.upload(analyse, inputs=[input_image, offset_slider], outputs=outputs)
+        outputs = [label_out, pred_md, uncertainty_out, preproc_image, cam_overlay, cam_heat, details_out, banner, cam_warn]
+        submit_btn.click(analyse, inputs=[input_image, offset_slider, sim_cam_box], outputs=outputs)
+        input_image.upload(analyse, inputs=[input_image, offset_slider, sim_cam_box], outputs=outputs)
         clear_btn.click(
-            lambda o: (None, None, "## Predicted class: -", "", None, None, None, "", adjustment_banner(o)),
-            inputs=offset_slider,
+            lambda o, c: (None, None, "## Predicted class: -", "", None, None, None, "",
+                          adjustment_banner(o, c), cam_warning(c)),
+            inputs=[offset_slider, sim_cam_box],
             outputs=[input_image] + outputs,
         )
 
@@ -298,8 +350,17 @@ with gr.Blocks(title="PODNet | XAI Anaemia Severity") as demo:
             "tab shows a red banner with these settings and how much each score was changed."
         )
         offset_slider.render()
+        gr.Markdown(
+            "### Simulated Grad-CAM\n"
+            "When ticked, the Predict tab shows a **simulated** heatmap that simply colours the tissue region "
+            "of the image (brightest at its centre) instead of the model's real Grad-CAM. The images are "
+            "stamped and labelled as simulated, and the red banner says so. Untick to show real Grad-CAM."
+        )
+        sim_cam_box.render()
 
-    offset_slider.change(adjustment_banner, inputs=offset_slider, outputs=banner)
+    for ctrl in (offset_slider, sim_cam_box):
+        ctrl.change(adjustment_banner, inputs=[offset_slider, sim_cam_box], outputs=banner)
+    sim_cam_box.change(cam_warning, inputs=sim_cam_box, outputs=cam_warn)
 
 
 if __name__ == "__main__":
