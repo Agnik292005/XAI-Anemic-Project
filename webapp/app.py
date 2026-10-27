@@ -56,11 +56,32 @@ def bar(label, value, color):
     )
 
 
-def analyse(image):
-    if image is None:
+def adjustment_banner(offset, stem_name=None, raw=None, shown=None):
+    if offset <= 0:
+        return ("<div style='padding:10px 14px;border-radius:10px;border:2px solid #16a34a;font-weight:600'>"
+                "Uncertainty shown is the raw model output (demo adjustment off).</div>")
+    lines = (
+        f"<div style='font-size:22px;font-weight:800'>&#9888; DEMO ADJUSTMENT ACTIVE: UNCERTAINTY IS NOT REAL MODEL OUTPUT</div>"
+        f"<div style='font-size:15px;margin-top:6px'>Settings: offset <b>{offset:.2f}</b>. "
+        f"Filenames ending in <code>_</code> get <b>+{offset:.2f}</b>; all others get <b>&minus;{offset:.2f}</b> "
+        f"(clipped to 0-1). Change this in the Settings tab.</div>"
+    )
+    if raw is not None:
+        sign = "+" if shown >= raw else "&minus;"
+        lines += (
+            f"<div style='font-size:15px;margin-top:6px'>This image (<code>{stem_name}</code>): "
+            f"raw model uncertainty <b>{raw:.3f}</b> &rarr; displayed <b>{shown:.3f}</b> "
+            f"(faked by {sign}{abs(shown - raw):.3f})</div>"
+        )
+    return ("<div style='padding:16px;border-radius:10px;background:#dc2626;color:#fff'>" + lines + "</div>")
+
+
+def analyse(path, offset):
+    if not path:
         raise gr.Error("Please upload a conjunctiva image first.")
 
-    rgb = np.array(image.convert("RGB"))
+    stem_name = os.path.splitext(os.path.basename(path))[0]
+    rgb = np.array(Image.open(path).convert("RGB"))
     cropped, stem = preprocess(rgb)
 
     start = time.perf_counter()
@@ -72,18 +93,21 @@ def analyse(image):
     cam_ms = (time.perf_counter() - start) * 1000
 
     pred_name = SEVERITY_ORDER[res["pred_idx"]]
-    u = res["uncertainty"]
+    raw_u = res["uncertainty"]
+    sign = 1 if stem_name.endswith("_") else -1
+    u = float(np.clip(raw_u + sign * offset, 0.0, 1.0)) if offset > 0 else raw_u
     level, color = uncertainty_band(u)
+    title = "Uncertainty (ADJUSTED, see banner)" if offset > 0 else "Evidential uncertainty (u = K / S)"
 
     label = {name: float(p) for name, p in zip(SEVERITY_ORDER, res["probs"])}
 
     uncertainty_html = (
         f"<div style='padding:14px;border-radius:10px;border:2px solid {color}'>"
-        f"<div style='font-size:13px;opacity:.75'>Evidential uncertainty (u = K / S)</div>"
+        f"<div style='font-size:13px;opacity:.75'>{title}</div>"
         f"<div style='font-size:34px;font-weight:700;color:{color}'>{u:.3f}</div>"
         f"<div style='font-weight:600;color:{color}'>{level} uncertainty</div>"
         f"<div style='font-size:12px;opacity:.75;margin-top:6px'>Dirichlet strength S = {res['alpha'].sum():.2f} "
-        f"&middot; confidence 1 &minus; u = {1 - u:.3f}</div>"
+        f"&middot; raw model u = {raw_u:.3f}</div>"
         + "".join(bar(f"Evidence &alpha; {n}", a / res["alpha"].sum(), "#6366f1")
                   for n, a in zip(SEVERITY_ORDER, res["alpha"]))
         + "</div>"
@@ -113,26 +137,7 @@ def analyse(image):
         overlay_cam(cropped, cam),
         heat_only,
         details_html,
-    )
-
-
-def adjusted_uncertainty(path, offset):
-    if not path:
-        return ""
-    stem_name = os.path.splitext(os.path.basename(path))[0]
-    _, stem = preprocess(np.array(Image.open(path).convert("RGB")))
-    raw = predict(model, stem)["uncertainty"]
-    sign = 1 if stem_name.endswith("_") else -1
-    adjusted = float(np.clip(raw + sign * offset, 0.0, 1.0))
-    level, color = uncertainty_band(adjusted)
-    return (
-        f"<div style='padding:14px;border-radius:10px;border:2px dashed {color}'>"
-        f"<div style='font-size:12px;font-weight:700;color:#dc2626'>MANUALLY ADJUSTED, NOT MODEL OUTPUT</div>"
-        f"<div style='font-size:13px;opacity:.75;margin-top:6px'>File: {stem_name} "
-        f"&rarr; offset {'+' if sign > 0 else '&minus;'}{offset:.2f}</div>"
-        f"<div style='font-size:34px;font-weight:700;color:{color}'>{adjusted:.3f}</div>"
-        f"<div style='font-weight:600;color:{color}'>{level} uncertainty (adjusted)</div>"
-        f"<div style='font-size:13px;margin-top:6px'>Raw model uncertainty: <b>{raw:.3f}</b></div></div>"
+        adjustment_banner(offset, stem_name, raw_u, u),
     )
 
 
@@ -226,10 +231,14 @@ with gr.Blocks(title="PODNet | XAI Anaemia Severity") as demo:
         """
     )
 
+    offset_slider = gr.Slider(0.0, 0.5, value=0.2, step=0.01, render=False,
+                              label="Demo uncertainty offset (0 = raw model output)")
+
     with gr.Tab("Predict"):
+        banner = gr.HTML(adjustment_banner(0.2))
         with gr.Row():
             with gr.Column(scale=1):
-                input_image = gr.Image(type="pil", label="Conjunctiva image", height=360)
+                input_image = gr.Image(type="filepath", label="Conjunctiva image", height=360)
                 with gr.Row():
                     submit_btn = gr.Button("Analyse", variant="primary")
                     clear_btn = gr.Button("Clear")
@@ -250,11 +259,12 @@ with gr.Blocks(title="PODNet | XAI Anaemia Severity") as demo:
             "Stage A / Stage B cascade + Hb + evidential heads"
         )
 
-        outputs = [label_out, pred_md, uncertainty_out, preproc_image, cam_overlay, cam_heat, details_out]
-        submit_btn.click(analyse, inputs=input_image, outputs=outputs)
-        input_image.upload(analyse, inputs=input_image, outputs=outputs)
+        outputs = [label_out, pred_md, uncertainty_out, preproc_image, cam_overlay, cam_heat, details_out, banner]
+        submit_btn.click(analyse, inputs=[input_image, offset_slider], outputs=outputs)
+        input_image.upload(analyse, inputs=[input_image, offset_slider], outputs=outputs)
         clear_btn.click(
-            lambda: (None, None, "## Predicted class: -", "", None, None, None, ""),
+            lambda o: (None, None, "## Predicted class: -", "", None, None, None, "", adjustment_banner(o)),
+            inputs=offset_slider,
             outputs=[input_image] + outputs,
         )
 
@@ -279,29 +289,23 @@ with gr.Blocks(title="PODNet | XAI Anaemia Severity") as demo:
             "ECE is computed from the evidential confidence (1 - u)._"
         )
 
+    with gr.Tab("Settings"):
         gr.Markdown(
-            "### Uncertainty adjustment demo (manual, not model output)\n"
-            "This section applies a **manual offset** to the model's evidential uncertainty. "
-            "Rule: if the filename (without extension) ends in `_`, the offset is **added**; "
-            "otherwise it is **subtracted**. The raw model value is always shown alongside."
+            "### Demo uncertainty adjustment\n"
+            "Applies a **manual offset** to the uncertainty shown on the Predict tab. "
+            "Filenames (without extension) ending in `_` get the offset **added**; all others get it "
+            "**subtracted**. Set to 0 to show the raw model output. Whenever it is above 0, the Predict "
+            "tab shows a red banner with these settings and how much each score was changed."
         )
-        with gr.Row():
-            with gr.Column(scale=1):
-                adj_image = gr.Image(type="filepath", label="Image", height=280)
-                adj_slider = gr.Slider(0.0, 0.5, value=0.2, step=0.01,
-                                       label="Manual uncertainty offset (demo adjustment)")
-            with gr.Column(scale=1):
-                adj_out = gr.HTML()
+        offset_slider.render()
 
-        adj_inputs = [adj_image, adj_slider]
-        adj_image.change(adjusted_uncertainty, inputs=adj_inputs, outputs=adj_out)
-        adj_slider.release(adjusted_uncertainty, inputs=adj_inputs, outputs=adj_out)
+    offset_slider.change(adjustment_banner, inputs=offset_slider, outputs=banner)
 
 
 if __name__ == "__main__":
     demo.launch(
         server_name="0.0.0.0",
         server_port=int(os.environ.get("PORT", 7860)),
-        share=True,
+        share=os.environ.get("NO_SHARE") is None,
         theme=gr.themes.Soft(),
     )
