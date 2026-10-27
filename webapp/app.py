@@ -9,6 +9,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from PIL import Image
 
 from modeling_podnet import (
     ANEMIC_DECISION_THRESHOLD,
@@ -112,6 +113,26 @@ def analyse(image):
         overlay_cam(cropped, cam),
         heat_only,
         details_html,
+    )
+
+
+def adjusted_uncertainty(path, offset):
+    if not path:
+        return ""
+    stem_name = os.path.splitext(os.path.basename(path))[0]
+    _, stem = preprocess(np.array(Image.open(path).convert("RGB")))
+    raw = predict(model, stem)["uncertainty"]
+    sign = 1 if stem_name.endswith("_") else -1
+    adjusted = float(np.clip(raw + sign * offset, 0.0, 1.0))
+    level, color = uncertainty_band(adjusted)
+    return (
+        f"<div style='padding:14px;border-radius:10px;border:2px dashed {color}'>"
+        f"<div style='font-size:12px;font-weight:700;color:#dc2626'>MANUALLY ADJUSTED, NOT MODEL OUTPUT</div>"
+        f"<div style='font-size:13px;opacity:.75;margin-top:6px'>File: {stem_name} "
+        f"&rarr; offset {'+' if sign > 0 else '&minus;'}{offset:.2f}</div>"
+        f"<div style='font-size:34px;font-weight:700;color:{color}'>{adjusted:.3f}</div>"
+        f"<div style='font-weight:600;color:{color}'>{level} uncertainty (adjusted)</div>"
+        f"<div style='font-size:13px;margin-top:6px'>Raw model uncertainty: <b>{raw:.3f}</b></div></div>"
     )
 
 
@@ -257,6 +278,24 @@ with gr.Blocks(title="PODNet | XAI Anaemia Severity") as demo:
             "_Note: Severe has only 7 test images, so its recall (0.43) is a high-variance estimate. "
             "ECE is computed from the evidential confidence (1 - u)._"
         )
+
+        gr.Markdown(
+            "### Uncertainty adjustment demo (manual, not model output)\n"
+            "This section applies a **manual offset** to the model's evidential uncertainty. "
+            "Rule: if the filename (without extension) ends in `_`, the offset is **added**; "
+            "otherwise it is **subtracted**. The raw model value is always shown alongside."
+        )
+        with gr.Row():
+            with gr.Column(scale=1):
+                adj_image = gr.Image(type="filepath", label="Image", height=280)
+                adj_slider = gr.Slider(0.0, 0.5, value=0.2, step=0.01,
+                                       label="Manual uncertainty offset (demo adjustment)")
+            with gr.Column(scale=1):
+                adj_out = gr.HTML()
+
+        adj_inputs = [adj_image, adj_slider]
+        adj_image.change(adjusted_uncertainty, inputs=adj_inputs, outputs=adj_out)
+        adj_slider.release(adjusted_uncertainty, inputs=adj_inputs, outputs=adj_out)
 
 
 if __name__ == "__main__":
