@@ -88,14 +88,33 @@ def adjustment_banner(offset, sim_cam, stem_name=None, raw=None, shown=None):
 
 
 def simulated_cam(rgb_img):
-    """Fake heatmap: highlights the tissue (non-background) region, peaking at its centre."""
+    """Fake heatmap: patchy blobs and a few hotspots placed on the tissue region.
+
+    Not derived from the model. Seeded from the image so the same image always gives the same map.
+    """
+    h, w = rgb_img.shape[:2]
     diff = np.abs(rgb_img.astype(np.float32) - _border_color(rgb_img).astype(np.float32)).sum(axis=2)
-    mask = (diff > 30).astype(np.uint8)
+    mask = (diff > 30).astype(np.float32)
     if mask.sum() == 0:
-        return np.zeros(rgb_img.shape[:2], np.float32)
-    dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
-    cam = cv2.GaussianBlur(dist, (0, 0), 6)
-    return cam / (cam.max() + 1e-8)
+        return np.zeros((h, w), np.float32)
+    rng = np.random.default_rng(int(rgb_img[::8, ::8].sum()) % (2 ** 32))
+
+    # Smooth random field gives uneven, blotchy activation along the tissue
+    field = cv2.GaussianBlur(rng.random((h, w)).astype(np.float32), (0, 0), 16)
+    field = (field - field.min()) / (field.max() - field.min() + 1e-8)
+    cam = field ** 4
+
+    # A few sharp hotspots on tissue pixels
+    ys, xs = np.nonzero(mask)
+    yy, xx = np.mgrid[0:h, 0:w]
+    for i in rng.choice(len(ys), size=min(3, len(ys)), replace=False):
+        sigma = rng.uniform(3, 6)
+        cam += rng.uniform(0.5, 1.0) * np.exp(-((yy - ys[i]) ** 2 + (xx - xs[i]) ** 2) / (2 * sigma ** 2))
+
+    # Keep it on the tissue, with a soft edge bleeding slightly outward like a real upsampled CAM
+    soft_mask = cv2.GaussianBlur(mask, (0, 0), 4)
+    cam = cv2.GaussianBlur(cam * soft_mask, (0, 0), 2)
+    return (cam / (cam.max() + 1e-8)).astype(np.float32)
 
 
 def stamp_simulated(img):
